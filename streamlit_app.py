@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 from scipy.signal import find_peaks, savgol_filter
 import re
@@ -8,11 +9,11 @@ import io
 import plotly.graph_objects as go
 
 # --- KONFIGURACE STRÁNKY ---
-st.set_page_config(page_title="SERS Plotter v4", layout="wide")
+st.set_page_config(page_title="SERS Plotter v5", layout="wide")
 
 st.title("Generátor SERS Spekter pro Publikace 🧪")
 st.markdown("""
-**v4.0**: Úprava pozic popisků (jen horní spektrum) a velikosti písma.
+**v5.0**: Výběr barevných palet, vypínání vodících čar a větší rozsah pro pozici popisků.
 """)
 
 # --- FUNKCE ---
@@ -57,45 +58,48 @@ if uploaded_files:
                 'file': f, 'volts': volts, 'label': f"{volts} mV ({f.name})"
             })
     
-    # Seřadíme tak, aby nahoře v grafu (poslední vykreslený) byl ten s největším offsetem
-    # Zde řadíme sestupně podle napětí (0, -100...), ale vykreslovací smyčka jde od 0 do N.
-    # Takže i=0 bude dole, i=max bude nahoře.
+    # Seřadíme sestupně podle napětí
     all_spectra.sort(key=lambda x: x['volts'], reverse=True)
     options = [s['label'] for s in all_spectra]
 
     # --- BOČNÍ PANEL ---
     st.sidebar.header("Nastavení grafu")
     
-    st.sidebar.subheader("🔎 Výběr spekter")
-    auto_step = st.sidebar.number_input("Předvybrat krok (mV)", value=100, step=10)
-    default_selection = [s['label'] for s in all_spectra if abs(s['volts']) % auto_step == 0]
+    # VÝBĚR SPEKTER
+    with st.sidebar.expander("🔎 Výběr spekter", expanded=True):
+        auto_step = st.number_input("Předvybrat krok (mV)", value=100, step=10)
+        default_selection = [s['label'] for s in all_spectra if abs(s['volts']) % auto_step == 0]
+        selected_labels = st.multiselect("Zvolte spektra:", options=options, default=default_selection)
     
-    selected_labels = st.sidebar.multiselect("Zvolte spektra:", options=options, default=default_selection)
     final_data_list = [s for s in all_spectra if s['label'] in selected_labels]
 
-    st.sidebar.divider()
-    st.sidebar.subheader("📐 Rozměry")
-    offset_val = st.sidebar.number_input("Offset (posun Y)", value=2000, step=100)
-    x_range = st.sidebar.slider("Rozsah osy X", 0, 4000, (300, 1800))
-    line_width = st.sidebar.slider("Tloušťka čáry", 0.5, 3.0, 1.5)
-    
-    st.sidebar.divider()
-    st.sidebar.subheader("📝 Písmo a Popisky")
-    font_size = st.sidebar.slider("Velikost písma os", 8, 20, 14)
-    
-    # NOVÉ OVLÁDACÍ PRVKY PRO POPISKY PÍKŮ
-    peak_label_size = st.sidebar.slider("Velikost písma popisků píků", 8, 30, 14)
-    label_height_offset = st.sidebar.slider("Výška popisků nad píkem", 50, 1000, 300, step=50)
-    
-    st.sidebar.divider()
-    st.sidebar.subheader("📍 Detekce píků")
-    show_auto_peaks = st.sidebar.checkbox("Automatické popisky (jen horní)", value=True)
-    peak_prominence = st.sidebar.slider("Citlivost automatu", 10, 1000, 100)
+    # VZHLED A BARVY
+    with st.sidebar.expander("🎨 Vzhled a Barvy", expanded=True):
+        # Výběr palety
+        palette_name = st.selectbox(
+            "Barevná paleta", 
+            ["jet", "viridis", "plasma", "inferno", "magma", "cividis", "coolwarm", "bwr", "rainbow", "nipy_spectral"],
+            index=0
+        )
+        offset_val = st.number_input("Offset (posun Y)", value=2000, step=100)
+        x_range = st.slider("Rozsah osy X", 0, 4000, (300, 1800))
+        line_width = st.slider("Tloušťka čáry", 0.5, 3.0, 1.5)
+        font_size = st.slider("Velikost písma os", 8, 20, 14)
 
-    st.sidebar.markdown("**Manuální píky**")
-    st.sidebar.info("Najeďte myší na interaktivní graf, zjistěte X a napište ho sem.")
-    manual_peaks_input = st.sidebar.text_input("Polohy píků (např. 1000, 1580):", "")
-    
+    # POPISKY PÍKŮ
+    with st.sidebar.expander("📍 Popisky píků", expanded=True):
+        peak_label_size = st.slider("Velikost písma popisků", 8, 30, 14)
+        # ZVĚTŠENÝ ROZSAH SLIDERU (až 5000)
+        label_height_offset = st.slider("Výška popisků nad píkem", 50, 5000, 500, step=50)
+        show_peak_lines = st.checkbox("Zobrazit vodící čáry k píkům", value=True)
+        
+        st.divider()
+        show_auto_peaks = st.checkbox("Automatické popisky (jen horní)", value=True)
+        peak_prominence = st.slider("Citlivost automatu", 10, 2000, 100)
+        
+        st.markdown("**Manuální píky**")
+        manual_peaks_input = st.text_input("Polohy píků (např. 1000, 1580):", "")
+
     manual_peaks = []
     if manual_peaks_input:
         try:
@@ -106,12 +110,19 @@ if uploaded_files:
     if not final_data_list:
         st.warning("Vyberte alespoň jedno spektrum.")
     else:
+        # Generování barev pro obě knihovny (Matplotlib i Plotly)
+        # Získáme objekt colormap z matplotlibu
+        cmap = plt.get_cmap(palette_name)
+        # Vygenerujeme N barev rovnoměrně rozložených
+        mpl_colors = cmap(np.linspace(0, 1, len(final_data_list)))
+        # Pro Plotly potřebujeme hex stringy
+        plotly_colors = [mcolors.to_hex(c) for c in mpl_colors]
+
         # ==========================================
         # 1. INTERAKTIVNÍ GRAF (PLOTLY)
         # ==========================================
         with st.expander("🔍 Interaktivní náhled (klikni pro rozbalení)", expanded=True):
             fig_interactive = go.Figure()
-            colors_plotly = [f"hsl({h},80%,50%)" for h in np.linspace(0, 240, len(final_data_list))]
             
             for i, item in enumerate(final_data_list):
                 x, y = load_data(item['file'])
@@ -125,7 +136,7 @@ if uploaded_files:
                 
                 fig_interactive.add_trace(go.Scatter(
                     x=x_crop, y=y_shifted, mode='lines', name=f"{item['volts']} mV",
-                    line=dict(width=2, color=colors_plotly[i]),
+                    line=dict(width=2, color=plotly_colors[i]),
                     hovertemplate='<b>%{x:.1f} cm⁻¹</b><br>Intenzita: %{y:.1f}'
                 ))
 
@@ -149,9 +160,7 @@ if uploaded_files:
         
         # Dynamická výška grafu
         fig, ax = plt.subplots(figsize=(10, 8 + (len(final_data_list)*0.5)))
-        colors = plt.cm.jet(np.linspace(0, 1, len(final_data_list)))
         
-        # Pomocná proměnná pro určení horního spektra
         top_spectrum_index = len(final_data_list) - 1
 
         for i, item in enumerate(final_data_list):
@@ -168,26 +177,35 @@ if uploaded_files:
             
             y_shifted = y_smooth + (i * offset_val)
             
-            ax.plot(x_crop, y_shifted, color=colors[i], linewidth=line_width, label=f"{item['volts']} mV")
+            # Použití barvy z vybrané palety
+            ax.plot(x_crop, y_shifted, color=mpl_colors[i], linewidth=line_width, label=f"{item['volts']} mV")
             
             # Popisek napětí vpravo
             ax.text(x_crop[-1] + 20, y_shifted[-1], f"{item['volts']} mV", 
-                    color=colors[i], va='center', fontsize=font_size, fontweight='bold')
+                    color=mpl_colors[i], va='center', fontsize=font_size, fontweight='bold')
             
             # === POPISKY PÍKŮ (JEN PRO HORNÍ SPEKTRUM) ===
             if i == top_spectrum_index:
                 
+                # Funkce pro vykreslení jednoho popisku
+                def draw_peak_label(pos_x, pos_y, color_line='black', color_text='black', weight='normal'):
+                    # Vodící čára (pokud je zapnutá)
+                    if show_peak_lines:
+                        ax.plot([pos_x, pos_x], [pos_y + 50, pos_y + label_height_offset - 50], 
+                                color=color_line, lw=0.5, alpha=0.8)
+                    
+                    # Text
+                    ax.text(pos_x, pos_y + label_height_offset, f"{int(pos_x)}", 
+                            rotation=90, ha='center', va='bottom', fontsize=peak_label_size, 
+                            color=color_text, fontweight=weight)
+
                 # 1. Automatické
                 if show_auto_peaks:
                     peaks, _ = find_peaks(y_shifted, prominence=peak_prominence, distance=50)
                     for p in peaks:
                         px = x_crop[p]
                         py = y_shifted[p]
-                        # Černá čárka
-                        ax.plot([px, px], [py + 50, py + label_height_offset - 50], color='black', lw=0.5, alpha=0.8)
-                        # Text
-                        ax.text(px, py + label_height_offset, f"{int(px)}", 
-                                rotation=90, ha='center', va='bottom', fontsize=peak_label_size, fontweight='normal')
+                        draw_peak_label(px, py)
 
                 # 2. Manuální
                 if manual_peaks:
@@ -201,12 +219,7 @@ if uploaded_files:
                             local_max_idx = start + np.argmax(y_shifted[start:end])
                             px = x_crop[local_max_idx]
                             py = y_shifted[local_max_idx]
-                            
-                            # Červená čárka
-                            ax.plot([px, px], [py + 50, py + label_height_offset - 50], color='red', lw=1.0, linestyle='--')
-                            # Text
-                            ax.text(px, py + label_height_offset, f"{int(px)}", 
-                                    rotation=90, ha='center', va='bottom', fontsize=peak_label_size, color='red', fontweight='bold')
+                            draw_peak_label(px, py, color_line='red', color_text='red', weight='bold')
 
         ax.set_xlabel("Ramanův posun (cm$^{-1}$)")
         ax.set_ylabel("Intenzita (a.u.)")
