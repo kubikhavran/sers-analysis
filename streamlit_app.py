@@ -9,11 +9,11 @@ import io
 import plotly.graph_objects as go
 
 # --- KONFIGURACE STRÁNKY ---
-st.set_page_config(page_title="SERS Plotter v8", layout="wide")
+st.set_page_config(page_title="SERS Plotter v9", layout="wide")
 
 st.title("Generátor SERS Spekter pro Publikace 🧪")
 st.markdown("""
-**v8.0**: Fixace popisků spekter mimo graf (zamezení překryvu) a editace názvů os.
+**v9.0**: Přidáno nastavení rozlišení (px) a DPI. Export do PNG i SVG.
 """)
 
 # --- POMOCNÉ FUNKCE ---
@@ -33,7 +33,7 @@ def load_data(uploaded_file):
         df['x'] = pd.to_numeric(df['x'], errors='coerce')
         df['y'] = pd.to_numeric(df['y'], errors='coerce')
         df = df.dropna()
-        df = df.sort_values(by='x') # Data jsou vždy seřazena vzestupně podle X
+        df = df.sort_values(by='x')
         return df['x'].values, df['y'].values
     except Exception as e:
         return None, None
@@ -50,12 +50,10 @@ with st.container():
 
 if uploaded_files:
     
-    # --- 1. PŘÍPRAVA DAT A POPISKŮ ---
+    # --- 1. DATA ---
     st.sidebar.header("1. Data a Popisky")
-    
-    with st.sidebar.expander("📂 Zdroje popisků a Řazení", expanded=True):
-        label_mode = st.radio("Způsob generování popisků:", ["Automaticky (z názvu)", "Manuálně (sekvence)"])
-        
+    with st.sidebar.expander("📂 Zdroje popisků", expanded=True):
+        label_mode = st.radio("Způsob popisků:", ["Automaticky (z názvu)", "Manuálně (sekvence)"])
         all_spectra = []
         
         if label_mode == "Automaticky (z názvu)":
@@ -65,12 +63,10 @@ if uploaded_files:
                 label = f"{val} mV" if volts is not None else f"??? ({f.name})"
                 all_spectra.append({'file': f, 'volts': val, 'label': label, 'filename': f.name})
             all_spectra.sort(key=lambda x: x['volts'], reverse=True)
-            
             auto_step = st.number_input("Filtr kroku (mV)", value=100, step=10)
             default_selection = [s['label'] for s in all_spectra if abs(s['volts']) % auto_step == 0]
-            
         else:
-            sort_type = st.selectbox("Seřadit soubory podle:", ["Jména (A-Z)", "Jména (Z-A)"])
+            sort_type = st.selectbox("Řazení souborů:", ["Jména (A-Z)", "Jména (Z-A)"])
             sorted_files = sorted(uploaded_files, key=lambda x: x.name)
             if sort_type == "Jména (Z-A)": sorted_files.reverse()
             
@@ -86,34 +82,46 @@ if uploaded_files:
                 calc_val = start_val + (i * step_val)
                 label = f"{calc_val} {unit_val}"
                 all_spectra.append({'file': f, 'volts': calc_val, 'label': label, 'filename': f.name})
-            
             default_selection = [s['label'] for s in all_spectra]
 
-    # Výběr spekter
     options = [s['label'] for s in all_spectra]
     if not options:
         st.error("Žádná data.")
         final_data_list = []
     else:
-        selected_labels = st.sidebar.multiselect("Vyberte spektra k zobrazení:", options=options, default=default_selection)
+        selected_labels = st.sidebar.multiselect("Vyberte spektra:", options=options, default=default_selection)
         final_data_list = [s for s in all_spectra if s['label'] in selected_labels]
 
-    # --- 2. VZHLED ---
-    st.sidebar.header("2. Vzhled")
-    with st.sidebar.expander("🎨 Grafika a Osy", expanded=True):
+    # --- 2. VZHLED A ROZMĚRY ---
+    st.sidebar.header("2. Vzhled a Export")
+    with st.sidebar.expander("📏 Rozměry a Kvalita", expanded=True):
+        # Nové nastavení rozlišení
+        col_w, col_h = st.columns(2)
+        with col_w:
+            img_width_px = st.number_input("Šířka (px)", value=1200, step=100)
+        with col_h:
+            img_height_px = st.number_input("Výška (px)", value=1000, step=100)
+            
+        img_dpi = st.number_input("DPI (kvalita)", value=150, step=50, help="Vyšší DPI = jemnější detaily, ale menší relativní text.")
+        
+        # Přepočet na palce pro Matplotlib
+        figsize_w = img_width_px / img_dpi
+        figsize_h = img_height_px / img_dpi
+        
+        st.caption(f"Fyzická velikost: {figsize_w:.1f} x {figsize_h:.1f} palců")
+
+    with st.sidebar.expander("🎨 Grafika a Osy", expanded=False):
         palette_name = st.selectbox("Paleta", ["jet", "viridis", "plasma", "inferno", "coolwarm", "bwr", "rainbow"], index=0)
         offset_val = st.number_input("Offset (posun Y)", value=2000, step=100)
         
-        st.divider()
-        # EDITACE NÁZVŮ OS
         xlabel_text = st.text_input("Popis osy X", "Ramanův posun (cm⁻¹)")
         ylabel_text = st.text_input("Popis osy Y", "Intenzita (a.u.)")
         
         x_range = st.slider("Rozsah osy X", 0, 4000, (300, 1800))
-        invert_x = st.checkbox("Invertovat osu X (zprava doleva)", value=False) # Defaultně False
+        invert_x = st.checkbox("Invertovat osu X", value=False)
         
         line_width = st.slider("Tloušťka čáry", 0.5, 3.0, 1.5)
-        font_size = st.slider("Velikost písma os", 8, 20, 14)
+        font_size = st.slider("Velikost písma os", 8, 30, 14)
 
     # --- 3. PÍKY ---
     st.sidebar.header("3. Správa Píků")
@@ -138,7 +146,7 @@ if uploaded_files:
         mpl_colors = cmap(np.linspace(0, 1, len(final_data_list)))
         plotly_colors = [mcolors.to_hex(c) for c in mpl_colors]
 
-        # 1. INTERAKTIVNÍ NÁHLED
+        # 1. INTERAKTIVNÍ
         with st.expander("🔍 Interaktivní náhled", expanded=False):
             fig_int = go.Figure()
             for i, item in enumerate(final_data_list):
@@ -157,7 +165,7 @@ if uploaded_files:
             )
             st.plotly_chart(fig_int, use_container_width=True)
 
-        # 2. STATICKÝ GRAF
+        # 2. STATICKÝ GRAF (MATPLOTLIB)
         st.subheader("📄 Finální výstup")
         
         plt.rcParams['font.family'] = 'Arial'
@@ -165,86 +173,69 @@ if uploaded_files:
         plt.rcParams['font.size'] = font_size
         plt.rcParams['axes.linewidth'] = 1.5
         
-        fig, ax = plt.subplots(figsize=(10, 8 + (len(final_data_list)*0.5)))
+        # Aplikace rozměrů zadaných uživatelem
+        fig, ax = plt.subplots(figsize=(figsize_w, figsize_h), dpi=img_dpi)
+        
         top_idx = len(final_data_list) - 1
 
         for i, item in enumerate(final_data_list):
             x, y = load_data(item['file'])
             if x is None: continue
             
-            # Filtrace a vyhlazení
             mask = (x >= x_range[0]) & (x <= x_range[1])
             x_c, y_c = x[mask], y[mask]
             if len(y_c) > 11: y_c = savgol_filter(y_c, 11, 3)
             y_s = y_c + (i * offset_val)
             
-            # Plot
             ax.plot(x_c, y_s, color=mpl_colors[i], lw=line_width, label=item['label'])
             
-            # === CHYTRÉ POPISKY SPEKTER (Mimo graf) ===
-            # Použijeme smíšenou transformaci: X souřadnice je relativní k ose (1.0 = pravý okraj), Y je data
-            trans = ax.get_yaxis_transform() 
-            
-            # Určíme Y pozici pro popisek. 
-            # Pokud je graf invertovaný (zprava doleva), vizuální konec vpravo je MINIMUM x (index 0).
-            # Pokud je graf normální, vizuální konec vpravo je MAXIMUM x (index -1).
-            if invert_x:
-                y_label_pos = y_s[0] # Data jsou seřazena vzestupně, takže 0 je nejmenší X (vpravo při inverzi)
-            else:
-                y_label_pos = y_s[-1] # -1 je největší X (vpravo při normálu)
-
-            # Vykreslíme text na pozici x=1.02 (2% za pravým okrajem grafu)
-            ax.text(1.02, y_label_pos, item['label'], 
-                    color=mpl_colors[i], va='center', ha='left', 
+            # Popisky spekter (mimo graf)
+            trans = ax.get_yaxis_transform()
+            y_lbl = y_s[0] if invert_x else y_s[-1]
+            ax.text(1.02, y_lbl, item['label'], color=mpl_colors[i], va='center', ha='left', 
                     fontsize=font_size, fontweight='bold', transform=trans, clip_on=False)
             
-            # === PÍKY ===
+            # Píky
             if i == top_idx:
-                final_peaks_indices = []
+                final_peaks = []
                 if use_auto:
-                    peaks, _ = find_peaks(y_s, prominence=prominence, distance=30)
-                    final_peaks_indices.extend(peaks)
+                    p, _ = find_peaks(y_s, prominence=prominence, distance=30)
+                    final_peaks.extend(p)
+                for ux in manual_adds:
+                    idx = find_nearest_idx(x_c, ux)
+                    w = 10
+                    s, e = max(0, idx-w), min(len(x_c), idx+w)
+                    if s<e:
+                        best = s + np.argmax(y_s[s:e])
+                        if not any(abs(existing-best)<5 for existing in final_peaks): final_peaks.append(best)
                 
-                for user_x in manual_adds:
-                    idx_approx = find_nearest_idx(x_c, user_x)
-                    window = 10 
-                    start, end = max(0, idx_approx - window), min(len(x_c), idx_approx + window)
-                    if start < end:
-                        local_max_rel = np.argmax(y_s[start:end])
-                        best_idx = start + local_max_rel
-                        if not any(abs(existing - best_idx) < 5 for existing in final_peaks_indices):
-                            final_peaks_indices.append(best_idx)
-
-                valid_indices = []
-                for p_idx in final_peaks_indices:
-                    p_x = x_c[p_idx]
-                    if not any(abs(p_x - rem_val) < 15 for rem_val in manual_removes):
-                        valid_indices.append(p_idx)
+                valid = [p for p in final_peaks if not any(abs(x_c[p]-r)<15 for r in manual_removes)]
                 
-                for p_idx in valid_indices:
-                    px = x_c[p_idx]
-                    py = y_s[p_idx]
+                for p in valid:
+                    px, py = x_c[p], y_s[p]
                     if show_peak_lines:
                         ax.plot([px, px], [py + 50, py + label_height_offset - 50], color='black', lw=0.5, alpha=0.8)
-                    ax.text(px, py + label_height_offset, f"{int(px)}", 
-                            rotation=90, ha='center', va='bottom', fontsize=peak_label_size)
+                    ax.text(px, py + label_height_offset, f"{int(px)}", rotation=90, ha='center', va='bottom', fontsize=peak_label_size)
 
-        # Design os
         ax.set_xlabel(xlabel_text)
         ax.set_ylabel(ylabel_text)
-        
-        if invert_x:
-            ax.set_xlim(x_range[1], x_range[0])
-        else:
-            ax.set_xlim(x_range[0], x_range[1])
-            
+        ax.set_xlim(x_range[1], x_range[0]) if invert_x else ax.set_xlim(x_range[0], x_range[1])
         ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False) # Pravá osa je pryč, ale text tam bude držet
+        ax.spines['right'].set_visible(False)
         ax.set_yticks([])
         
+        # Zobrazení v Streamlit (respektuje poměr stran)
         st.pyplot(fig)
         
-        fn = "SERS_v8_final.svg"
-        img = io.BytesIO()
-        plt.savefig(img, format='svg', bbox_inches='tight') # bbox_inches='tight' zajistí, že popisky mimo graf se neoříznou
-        st.download_button("📥 Stáhnout SVG", img, fn, "image/svg+xml")
+        # Tlačítka pro stažení
+        col_d1, col_d2 = st.columns(2)
+        
+        # 1. SVG
+        svg_io = io.BytesIO()
+        plt.savefig(svg_io, format='svg', bbox_inches='tight', dpi=img_dpi)
+        col_d1.download_button("📥 Stáhnout SVG (Vektor)", svg_io, "SERS_output.svg", "image/svg+xml")
+        
+        # 2. PNG (Pixel Perfect)
+        png_io = io.BytesIO()
+        plt.savefig(png_io, format='png', bbox_inches='tight', dpi=img_dpi)
+        col_d2.download_button(f"📥 Stáhnout PNG ({img_width_px}x{img_height_px})", png_io, "SERS_output.png", "image/png")
